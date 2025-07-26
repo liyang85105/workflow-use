@@ -159,7 +159,7 @@ class EventCorrelator:
     def _time_window_correlation(self, 
                                browser_event: BrowserEvent,
                                voice_events: List[VoiceEvent]) -> CorrelationResult:
-        """基于时间窗口的关联"""
+        """基于时间窗口的关联 - 支持细粒度时间戳"""
         if not voice_events:
             return CorrelationResult(
                 browser_event=browser_event,
@@ -170,42 +170,52 @@ class EventCorrelator:
                 metadata={}
             )
         
-        # 计算时间相关性
         browser_time = browser_event.timestamp
-        total_score = 0.0
-        valid_events = []
+        scored_events = []
         
         for voice_event in voice_events:
             time_diff = abs(voice_event.timestamp - browser_time)
             
-            # 时间越近，分数越高
-            time_score = max(0, 1 - (time_diff / self.time_window))
-            
-            # 考虑语音识别置信度
-            confidence_score = voice_event.confidence
-            
-            # 综合分数
-            event_score = time_score * confidence_score
-            
-            if event_score > 0:
-                total_score += event_score
-                valid_events.append(voice_event)
+            # 细粒度时间戳允许更精确的关联
+            if time_diff <= self.time_window:
+                # 时间越近，分数越高（非线性衰减）
+                time_score = max(0, 1 - (time_diff / self.time_window) ** 0.5)
+                
+                # 考虑语音识别置信度
+                confidence_score = voice_event.confidence
+                
+                # 综合分数
+                event_score = time_score * confidence_score
+                
+                scored_events.append({
+                    'event': voice_event,
+                    'score': event_score,
+                    'time_diff': time_diff
+                })
         
-        # 归一化分数
+        # 按分数排序，取最相关的语音事件
+        scored_events.sort(key=lambda x: x['score'], reverse=True)
+        
+        # 可以选择只取最高分的，或者取分数超过阈值的所有事件
+        valid_events = [se for se in scored_events if se['score'] > 0.3]
+        
         if valid_events:
-            avg_score = total_score / len(valid_events)
+            avg_score = sum(se['score'] for se in valid_events) / len(valid_events)
+            selected_voice_events = [se['event'] for se in valid_events]
         else:
             avg_score = 0.0
+            selected_voice_events = []
         
         return CorrelationResult(
             browser_event=browser_event,
-            voice_events=valid_events,
+            voice_events=selected_voice_events,
             correlation_score=avg_score,
             time_window=self.time_window,
             correlation_method=CorrelationMethod.TIME_WINDOW,
             metadata={
-                'time_scores': [abs(ve.timestamp - browser_time) for ve in valid_events],
-                'confidence_scores': [ve.confidence for ve in valid_events]
+                'time_diffs': [se['time_diff'] for se in valid_events],
+                'individual_scores': [se['score'] for se in valid_events],
+                'total_candidates': len(voice_events)
             }
         )
     

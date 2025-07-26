@@ -219,12 +219,16 @@ export class VoiceProcessor {
       // 获取当前录音段
       const segmentBlob = await this.recorder.getCurrentSegment();
       
-      if (segmentBlob && segmentBlob.size > 8192) { // 最小8KB
+      if (segmentBlob && segmentBlob.size > 8192) {
         const recordingDuration = Date.now() - this.lastSoundTime + this.silenceDuration;
         
         if (recordingDuration >= this.minRecordingDuration) {
           console.log(`📤 Sending voice segment: ${segmentBlob.size} bytes`);
-          this.sendAudioToServer(segmentBlob);
+          
+          // 使用语音开始时间而不是发送时间作为时间戳
+          const voiceStartTime = this.lastSoundTime - recordingDuration + this.silenceDuration;
+          
+          this.sendAudioToServer(segmentBlob, voiceStartTime);
           
           // 清空当前段的数据
           this.recorder.clearCurrentSegment();
@@ -259,16 +263,9 @@ export class VoiceProcessor {
     }
   }
 
-  private sendAudioToServer(audioBlob: Blob): void {
+  private sendAudioToServer(audioBlob: Blob, voiceStartTime?: number): void {
     if (!this.websocket || !this.isConnected) {
       console.error('WebSocket 未连接，无法发送音频数据');
-      return;
-    }
-
-    console.log(`🎵 Preparing to send audio segment, size: ${audioBlob.size} bytes`);
-
-    if (audioBlob.size < 8192) {
-      console.warn(`⚠️ Audio segment too small (${audioBlob.size} bytes), skipping`);
       return;
     }
 
@@ -279,26 +276,24 @@ export class VoiceProcessor {
         
         try {
           const message = {
-            type: 'audio_segment', // 改为 segment 类型
+            type: 'audio_segment',
             data: base64Data,
-            timestamp: Date.now(),
+            timestamp: voiceStartTime || Date.now(), // 使用语音开始时间
+            voiceStartTime: voiceStartTime, // 语音开始时间
+            voiceEndTime: Date.now(), // 语音结束时间
             size: audioBlob.size,
             mimeType: audioBlob.type,
             format: this.detectAudioFormat(audioBlob.type),
-            isSegment: true // 标识这是一个分段
+            isSegment: true
           };
           
           this.websocket.send(JSON.stringify(message));
-          console.log('✅ Audio segment sent successfully');
+          console.log(`✅ Audio segment sent with timestamp: ${voiceStartTime}`);
           
         } catch (error) {
           console.error('❌ Failed to send audio segment:', error);
         }
       }
-    };
-    
-    reader.onerror = (error) => {
-      console.error('❌ Failed to read audio segment:', error);
     };
     
     reader.readAsDataURL(audioBlob);

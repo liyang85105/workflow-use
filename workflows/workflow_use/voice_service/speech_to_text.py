@@ -106,12 +106,10 @@ class SpeechToTextService:
     async def process_audio_chunk(self, audio_data):
         """处理音频分段 - 支持实时识别"""
         try:
-            # 解析消息
             if isinstance(audio_data, str):
                 message = json.loads(audio_data)
                 
                 if message.get('type') == 'audio_segment':
-                    # 实时分段处理
                     await self.send_ack_to_client("正在识别...")
                     
                     # 异步处理识别
@@ -119,11 +117,22 @@ class SpeechToTextService:
                     text = await loop.run_in_executor(None, self.transcribe_audio, message.get('data'))
                     
                     if text and text.strip():
-                        await self.broadcast_transcription(text, message.get('timestamp', datetime.now().timestamp()))
-                        logger.info(f"✅ Segment transcribed: {text[:50]}...")
+                        # 使用语音开始时间作为转录结果的时间戳
+                        voice_timestamp = message.get('voiceStartTime', message.get('timestamp', datetime.now().timestamp()))
+                        
+                        await self.broadcast_transcription(
+                            text, 
+                            voice_timestamp,
+                            {
+                                'voiceStartTime': message.get('voiceStartTime'),
+                                'voiceEndTime': message.get('voiceEndTime'),
+                                'segmentDuration': message.get('voiceEndTime', 0) - message.get('voiceStartTime', 0)
+                            }
+                        )
+                        logger.info(f"✅ Segment transcribed at {voice_timestamp}: {text[:50]}...")
                     else:
                         logger.info("🔇 Segment was silent or unclear")
-                        
+                    
         except Exception as e:
             logger.error(f"Error processing audio segment: {e}")
             await self.send_error_to_client(f"分段识别失败: {str(e)}")
@@ -236,25 +245,23 @@ class SpeechToTextService:
             logger.error(f"Full traceback: {traceback.format_exc()}")
             return "[转录失败，请重试]"
 
-    async def broadcast_transcription(self, text: str, timestamp: float):
+    async def broadcast_transcription(self, text: str, timestamp: float, metadata: dict = None):
         """广播转录结果到所有连接的客户端"""
         message = {
             'type': 'transcription',
             'text': text,
             'timestamp': timestamp,
-            'source': 'openai-whisper'
+            'source': 'openai-whisper',
+            'metadata': metadata or {}
         }
         
-        logger.info(f"Broadcasting transcription: {text}")
+        logger.info(f"Broadcasting transcription at {timestamp}: {text}")
         
-        # 发送给所有连接的客户端
         if self.clients:
-            # 创建发送任务列表
             tasks = []
-            for client in self.clients.copy():  # 使用copy避免在迭代时修改集合
+            for client in self.clients.copy():
                 tasks.append(self.send_to_client(client, message))
             
-            # 并发发送消息
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def send_to_client(self, client, message):
