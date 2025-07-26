@@ -7,6 +7,16 @@ export class VoiceProcessor {
   private isConnected: boolean = false;
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number = 5;
+  
+  // VAD 相关属性
+  private isVADEnabled: boolean = true;
+  private silenceThreshold: number = 0.01; // 静音阈值
+  private silenceDuration: number = 1500; // 1.5秒静音后发送
+  private minRecordingDuration: number = 500; // 最小录音时长500ms
+  private silenceTimer: NodeJS.Timeout | null = null;
+  private currentAudioChunks: Blob[] = [];
+  private lastSoundTime: number = 0;
+  private isProcessingSegment: boolean = false;
 
   private constructor(websocket: WebSocket, url: string) {
     this.recorder = new VoiceRecorder();
@@ -129,6 +139,12 @@ export class VoiceProcessor {
     
     try {
       await this.recorder.startRecording();
+      
+      // 启动 VAD 监听
+      if (this.isVADEnabled) {
+        this.startVADMonitoring();
+      }
+      
       console.log('语音录制已开始');
     } catch (error) {
       console.error('开始录音失败:', error);
@@ -136,26 +152,103 @@ export class VoiceProcessor {
     }
   }
 
+  private startVADMonitoring(): void {
+    // 获取音频流进行实时分析
+    const stream = this.recorder.getMediaStream();
+    if (!stream) return;
+
+    const audioContext = new AudioContext();
+    const source = audioContext.createMediaStreamSource(stream);
+    const analyser = audioContext.createAnalyser();
+    
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.8;
+    source.connect(analyser);
+
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+
+    const checkAudioLevel = () => {
+      if (!this.recorder.getRecordingState()) return;
+
+      analyser.getByteFrequencyData(dataArray);
+      
+      // 计算音频能量
+      const average = dataArray.reduce((sum, value) => sum + value, 0) / bufferLength;
+      const normalizedLevel = average / 255;
+
+      const currentTime = Date.now();
+      
+      if (normalizedLevel > this.silenceThreshold) {
+        // 检测到声音
+        this.lastSoundTime = currentTime;
+        
+        // 清除静音计时器
+        if (this.silenceTimer) {
+          clearTimeout(this.silenceTimer);
+          this.silenceTimer = null;
+        }
+        
+        console.log(`🎵 Voice detected: ${normalizedLevel.toFixed(3)}`);
+      } else {
+        // 静音状态
+        const silenceDuration = currentTime - this.lastSoundTime;
+        
+        if (silenceDuration > this.silenceDuration && !this.silenceTimer && !this.isProcessingSegment) {
+          // 静音超过阈值，准备发送当前段
+          console.log(`🔇 Silence detected for ${silenceDuration}ms, preparing to send segment`);
+          this.silenceTimer = setTimeout(() => {
+            this.sendCurrentSegment();
+          }, 100); // 短暂延迟确保音频数据完整
+        }
+      }
+
+      // 继续监听
+      requestAnimationFrame(checkAudioLevel);
+    };
+
+    checkAudioLevel();
+  }
+
+  private async sendCurrentSegment(): Promise<void> {
+    if (this.isProcessingSegment) return;
+    
+    this.isProcessingSegment = true;
+    
+    try {
+      // 获取当前录音段
+      const segmentBlob = await this.recorder.getCurrentSegment();
+      
+      if (segmentBlob && segmentBlob.size > 8192) { // 最小8KB
+        const recordingDuration = Date.now() - this.lastSoundTime + this.silenceDuration;
+        
+        if (recordingDuration >= this.minRecordingDuration) {
+          console.log(`📤 Sending voice segment: ${segmentBlob.size} bytes`);
+          this.sendAudioToServer(segmentBlob);
+          
+          // 清空当前段的数据
+          this.recorder.clearCurrentSegment();
+        } else {
+          console.log(`⏱️ Segment too short (${recordingDuration}ms), keeping for next segment`);
+        }
+      }
+    } catch (error) {
+      console.error('❌ Error sending voice segment:', error);
+    } finally {
+      this.isProcessingSegment = false;
+      this.silenceTimer = null;
+    }
+  }
+
   async stopRecording(): Promise<Blob | null> {
     try {
       if (this.recorder.getRecordingState()) {
-        const audioBlob = await this.recorder.stopRecording();
-        
-        if (audioBlob) {
-          console.log(`🎵 Audio blob created: ${audioBlob.size} bytes`);
-          
-          // Check minimum size before sending
-          if (audioBlob.size < 8192) { // 8KB minimum
-            console.warn('⚠️ Audio too small, not sending to server');
-            return audioBlob;
-          }
-          
-          // 将音频数据发送到服务器
-          if (this.websocket && this.isConnected) {
-            this.sendAudioToServer(audioBlob);
-          }
+        // 发送最后一段（如果有的话）
+        if (!this.isProcessingSegment) {
+          await this.sendCurrentSegment();
         }
         
+        const audioBlob = await this.recorder.stopRecording();
         console.log('语音录制已停止');
         return audioBlob;
       }
@@ -172,11 +265,10 @@ export class VoiceProcessor {
       return;
     }
 
-    console.log(`🎵 Preparing to send audio blob, size: ${audioBlob.size} bytes, type: ${audioBlob.type}`);
+    console.log(`🎵 Preparing to send audio segment, size: ${audioBlob.size} bytes`);
 
-    // Check if blob is large enough
     if (audioBlob.size < 8192) {
-      console.warn(`⚠️ Audio blob too small (${audioBlob.size} bytes), skipping transmission`);
+      console.warn(`⚠️ Audio segment too small (${audioBlob.size} bytes), skipping`);
       return;
     }
 
@@ -184,34 +276,29 @@ export class VoiceProcessor {
     reader.onload = () => {
       if (reader.result && this.websocket) {
         const base64Data = (reader.result as string).split(',')[1];
-        console.log(`📦 Base64 audio data length: ${base64Data.length}`);
         
         try {
           const message = {
-            type: 'audio', 
+            type: 'audio_segment', // 改为 segment 类型
             data: base64Data,
             timestamp: Date.now(),
             size: audioBlob.size,
             mimeType: audioBlob.type,
-            format: this.detectAudioFormat(audioBlob.type)
+            format: this.detectAudioFormat(audioBlob.type),
+            isSegment: true // 标识这是一个分段
           };
           
-          const messageStr = JSON.stringify(message);
-          console.log(`📤 Sending ${audioBlob.type} audio, message size: ${messageStr.length} characters`);
-          
-          this.websocket.send(messageStr);
-          console.log('✅ Audio data sent successfully');
-          
-          this.waitForTranscription();
+          this.websocket.send(JSON.stringify(message));
+          console.log('✅ Audio segment sent successfully');
           
         } catch (error) {
-          console.error('❌ Failed to send audio data:', error);
+          console.error('❌ Failed to send audio segment:', error);
         }
       }
     };
     
     reader.onerror = (error) => {
-      console.error('❌ Failed to read audio blob:', error);
+      console.error('❌ Failed to read audio segment:', error);
     };
     
     reader.readAsDataURL(audioBlob);

@@ -104,20 +104,29 @@ class SpeechToTextService:
             logger.info(f"Client removed. Total clients: {len(self.clients)}")
 
     async def process_audio_chunk(self, audio_data):
-        """优化的音频处理 - 支持流式识别"""
+        """处理音频分段 - 支持实时识别"""
         try:
-            # 快速响应确认收到
-            await self.send_ack_to_client("音频接收中...")
-            
-            # 异步处理识别
-            loop = asyncio.get_event_loop()
-            text = await loop.run_in_executor(None, self.transcribe_audio, audio_data)
-            
-            if text:
-                await self.broadcast_transcription(text, datetime.now().timestamp())
+            # 解析消息
+            if isinstance(audio_data, str):
+                message = json.loads(audio_data)
                 
+                if message.get('type') == 'audio_segment':
+                    # 实时分段处理
+                    await self.send_ack_to_client("正在识别...")
+                    
+                    # 异步处理识别
+                    loop = asyncio.get_event_loop()
+                    text = await loop.run_in_executor(None, self.transcribe_audio, message.get('data'))
+                    
+                    if text and text.strip():
+                        await self.broadcast_transcription(text, message.get('timestamp', datetime.now().timestamp()))
+                        logger.info(f"✅ Segment transcribed: {text[:50]}...")
+                    else:
+                        logger.info("🔇 Segment was silent or unclear")
+                        
         except Exception as e:
-            await self.send_error_to_client(f"识别失败: {str(e)}")
+            logger.error(f"Error processing audio segment: {e}")
+            await self.send_error_to_client(f"分段识别失败: {str(e)}")
 
     def transcribe_audio(self, audio_data) -> Optional[str]:
         """
@@ -278,6 +287,20 @@ class SpeechToTextService:
         """设置Whisper模型"""
         self.whisper_model = model
         logger.info(f"Model set to: {model}")
+
+    async def send_ack_to_client(self, message: str):
+        """发送确认消息给客户端"""
+        ack_message = {
+            'type': 'ack',
+            'message': message,
+            'timestamp': datetime.now().timestamp()
+        }
+        
+        if self.clients:
+            tasks = []
+            for client in self.clients.copy():
+                tasks.append(self.send_to_client(client, ack_message))
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def main():

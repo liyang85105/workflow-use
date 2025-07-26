@@ -1,127 +1,94 @@
 export class VoiceRecorder {
   private mediaRecorder: MediaRecorder | null = null;
   private audioChunks: Blob[] = [];
-  private isRecording: boolean = false;
+  private currentSegmentChunks: Blob[] = []; // 当前段的音频块
   private stream: MediaStream | null = null;
+  private isRecording: boolean = false;
 
   async startRecording(): Promise<void> {
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
-          sampleRate: 16000,      // Standard rate for speech recognition
-          channelCount: 1,        // Mono
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true
+          autoGainControl: true,
+          sampleRate: 16000 // 优化语音识别
         } 
       });
-      
-      // Try different formats in order of compatibility
-      const formats = [
-        'audio/wav',
-        'audio/mp4',
-        'audio/ogg;codecs=opus',
-        'audio/webm;codecs=opus'
-      ];
-      
-      let selectedFormat = '';
-      for (const format of formats) {
-        if (MediaRecorder.isTypeSupported(format)) {
-          selectedFormat = format;
-          console.log(`✅ Using audio format: ${format}`);
-          break;
-        }
-      }
-      
-      const options: MediaRecorderOptions = {
-        audioBitsPerSecond: 32000  // Moderate bitrate
-      };
-      
-      if (selectedFormat) {
-        options.mimeType = selectedFormat;
-      }
-      
-      this.mediaRecorder = new MediaRecorder(this.stream, options);
-      
+
+      this.mediaRecorder = new MediaRecorder(this.stream, {
+        mimeType: 'audio/webm;codecs=opus',
+        audioBitsPerSecond: 16000 // 降低比特率，适合语音
+      });
+
+      this.audioChunks = [];
+      this.currentSegmentChunks = [];
+
       this.mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           this.audioChunks.push(event.data);
-          console.log(`🎤 Audio chunk: ${event.data.size} bytes, type: ${event.data.type}`);
+          this.currentSegmentChunks.push(event.data); // 同时添加到当前段
         }
       };
-      
-      this.mediaRecorder.onerror = (event) => {
-        console.error('❌ MediaRecorder error:', event);
-      };
-      
-      // Start recording with longer intervals to ensure adequate size
-      this.mediaRecorder.start(2000); // 2 second chunks
+
+      this.mediaRecorder.start(100); // 每100ms产生一个数据块，便于实时处理
       this.isRecording = true;
-      console.log(`🎤 Recording started with format: ${selectedFormat || 'default'}`);
       
+      console.log('✅ MediaRecorder started with segment support');
     } catch (error) {
       console.error('❌ Failed to start recording:', error);
       throw error;
     }
   }
 
-  async stopRecording(): Promise<Blob | null> {
-    if (!this.mediaRecorder || !this.isRecording) {
-      console.log('⚠️ No active recording to stop');
+  async getCurrentSegment(): Promise<Blob | null> {
+    if (this.currentSegmentChunks.length === 0) {
       return null;
     }
 
-    return new Promise((resolve) => {
-      if (!this.mediaRecorder) {
-        resolve(null);
-        return;
-      }
-
-      this.mediaRecorder.onstop = () => {
-        console.log('🛑 Recording stopped, processing chunks...');
-        
-        if (this.audioChunks.length === 0) {
-          console.warn('⚠️ No audio chunks recorded');
-          resolve(null);
-          return;
-        }
-
-        const audioBlob = new Blob(this.audioChunks, { 
-          type: this.audioChunks[0]?.type || 'audio/webm' 
-        });
-        
-        console.log(`✅ Created audio blob: ${audioBlob.size} bytes, type: ${audioBlob.type}`);
-        
-        // Check if blob is large enough (minimum ~8KB for 0.1+ seconds)
-        if (audioBlob.size < 8192) {
-          console.warn(`⚠️ Audio blob too small (${audioBlob.size} bytes), may be rejected by API`);
-        }
-        
-        this.audioChunks = [];
-        this.isRecording = false;
-        
-        // Stop all tracks
-        if (this.stream) {
-          this.stream.getTracks().forEach(track => track.stop());
-        }
-        
-        resolve(audioBlob);
-      };
-
-      this.mediaRecorder.stop();
+    // 创建当前段的 Blob
+    const segmentBlob = new Blob(this.currentSegmentChunks, { 
+      type: 'audio/webm;codecs=opus' 
     });
+    
+    return segmentBlob;
+  }
+
+  clearCurrentSegment(): void {
+    // 清空当前段，但保留总的录音数据
+    this.currentSegmentChunks = [];
+    console.log('🧹 Current segment cleared');
+  }
+
+  getMediaStream(): MediaStream | null {
+    return this.stream;
   }
 
   getRecordingState(): boolean {
     return this.isRecording;
   }
 
-  // 清理资源
-  dispose(): void {
-    if (this.isRecording && this.mediaRecorder) {
-      this.mediaRecorder.stop();
+  async stopRecording(): Promise<Blob | null> {
+    if (!this.mediaRecorder || !this.isRecording) {
+      return null;
     }
-    
+
+    return new Promise((resolve) => {
+      if (this.mediaRecorder) {
+        this.mediaRecorder.onstop = () => {
+          const audioBlob = new Blob(this.audioChunks, { 
+            type: 'audio/webm;codecs=opus' 
+          });
+          this.isRecording = false;
+          resolve(audioBlob);
+        };
+
+        this.mediaRecorder.stop();
+      }
+    });
+  }
+
+  dispose(): void {
     if (this.stream) {
       this.stream.getTracks().forEach(track => track.stop());
       this.stream = null;
@@ -129,6 +96,7 @@ export class VoiceRecorder {
     
     this.mediaRecorder = null;
     this.audioChunks = [];
+    this.currentSegmentChunks = [];
     this.isRecording = false;
   }
 }
