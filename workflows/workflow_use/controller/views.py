@@ -1,14 +1,13 @@
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 # Shared config allowing extra fields so recorder payloads pass through
 class _BaseExtra(BaseModel):
 	"""Base model ignoring unknown fields."""
 
-	class Config:
-		extra = 'ignore'
+	model_config = ConfigDict(extra='ignore')
 
 
 # Mixin for shared step metadata (timestamp and tab context)
