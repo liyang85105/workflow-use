@@ -1,12 +1,17 @@
 import * as rrweb from "rrweb";
 import { EventType, IncrementalSource } from "@rrweb/types";
+import { VoiceProcessor } from '../voice/voice_processor';
+import { VoiceRecorder } from "@/voice/voice_recorder";
 
 let stopRecording: (() => void) | undefined = undefined;
-let isRecordingActive = true; // Content script's local state
+let isRecordingActive = true;
 let scrollTimeout: ReturnType<typeof setTimeout> | null = null;
 let lastScrollY: number | null = null;
 let lastDirection: "up" | "down" | null = null;
-const DEBOUNCE_MS = 500; // Wait 500ms after scroll stops
+const DEBOUNCE_MS = 500;
+
+let voiceProcessor: VoiceProcessor | null = null;
+let isVoiceEnabled: boolean = false;
 
 // --- Helper function to generate XPath ---
 function getXPath(element: HTMLElement): string {
@@ -111,6 +116,253 @@ function getEnhancedCSSSelector(element: HTMLElement, xpath: string): string {
   }
 }
 
+function createVoiceControlPanel(): void {
+  // 检查是否已存在控制面板
+  if (document.getElementById('voice-control-panel')) {
+    return;
+  }
+
+  const panel = document.createElement('div');
+  panel.id = 'voice-control-panel';
+  panel.style.cssText = `
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 2147483647;
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    border-radius: 16px;
+    padding: 16px 20px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    transition: all 0.3s ease;
+    min-width: 200px;
+  `;
+
+  // 录音状态指示器
+  const recordingIndicator = document.createElement('div');
+  recordingIndicator.id = 'recording-indicator';
+  recordingIndicator.style.cssText = `
+    position: relative;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #9CA3AF;
+    transition: all 0.3s ease;
+  `;
+
+  // 创建同心圆动画元素
+  const pulseRing = document.createElement('div');
+  pulseRing.id = 'pulse-ring';
+  pulseRing.style.cssText = `
+    position: absolute;
+    top: -4px;
+    left: -4px;
+    width: 20px;
+    height: 20px;
+    border: 2px solid #EF4444;
+    border-radius: 50%;
+    opacity: 0;
+    transform: scale(0.8);
+    animation: none;
+  `;
+
+  recordingIndicator.appendChild(pulseRing);
+
+  const voiceToggle = document.createElement('button');
+  voiceToggle.textContent = '🎤 智能语音助理';
+  voiceToggle.style.cssText = `
+    background: linear-gradient(135deg, #4F46E5, #7C3AED);
+    color: white;
+    border: none;
+    padding: 10px 16px;
+    border-radius: 12px;
+    cursor: pointer;
+    font-weight: 500;
+    font-size: 13px;
+    transition: all 0.2s ease;
+    box-shadow: 0 2px 8px rgba(79, 70, 229, 0.3);
+    flex: 1;
+  `;
+
+  // 添加按钮悬停效果
+  voiceToggle.addEventListener('mouseenter', () => {
+    voiceToggle.style.transform = 'translateY(-1px)';
+    voiceToggle.style.boxShadow = '0 4px 12px rgba(79, 70, 229, 0.4)';
+  });
+
+  voiceToggle.addEventListener('mouseleave', () => {
+    voiceToggle.style.transform = 'translateY(0)';
+    voiceToggle.style.boxShadow = '0 2px 8px rgba(79, 70, 229, 0.3)';
+  });
+
+  voiceToggle.onclick = toggleVoiceRecording;
+
+  const status = document.createElement('span');
+  status.id = 'voice-status';
+  status.textContent = '未启用';
+  status.style.cssText = `
+    color: #6B7280;
+    font-size: 12px;
+    font-weight: 500;
+    min-width: 60px;
+  `;
+
+  // 添加CSS动画样式到页面
+  if (!document.getElementById('voice-panel-styles')) {
+    const style = document.createElement('style');
+    style.id = 'voice-panel-styles';
+    style.textContent = `
+      @keyframes pulse-ring {
+        0% {
+          transform: scale(0.8);
+          opacity: 1;
+        }
+        50% {
+          transform: scale(1.2);
+          opacity: 0.7;
+        }
+        100% {
+          transform: scale(1.4);
+          opacity: 0;
+        }
+      }
+      
+      @keyframes pulse-dot {
+        0%, 100% {
+          transform: scale(1);
+          opacity: 1;
+        }
+        50% {
+          transform: scale(1.1);
+          opacity: 0.8;
+        }
+      }
+      
+      .recording-active {
+        background: #EF4444 !important;
+        animation: pulse-dot 1.5s ease-in-out infinite !important;
+      }
+      
+      .pulse-ring-active {
+        animation: pulse-ring 1.5s ease-out infinite !important;
+        opacity: 1 !important;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  panel.appendChild(recordingIndicator);
+  panel.appendChild(voiceToggle);
+  panel.appendChild(status);
+  document.body.appendChild(panel);
+}
+
+async function initializeVoiceProcessor() {
+  if (voiceProcessor) {
+    console.log("Voice processor already initialized");
+    return voiceProcessor;
+  }
+
+  try {
+    console.log("正在尝试连接 WebSocket 并初始化处理器...");
+    
+    voiceProcessor = await VoiceProcessor.create('ws://127.0.0.1:8765/voice-stream');
+    
+    console.log("✅ WebSocket 连接成功，处理器准备就绪！");
+    return voiceProcessor;
+
+  } catch (error) {
+    console.error("❌ 初始化语音处理器失败:", error);
+    throw error;
+  }
+}
+
+async function toggleVoiceRecording(): Promise<void> {
+  const statusElement = document.getElementById('voice-status');
+  const toggleButton = document.querySelector('#voice-control-panel button') as HTMLButtonElement;
+  const recordingIndicator = document.getElementById('recording-indicator');
+  const pulseRing = document.getElementById('pulse-ring');
+
+  try {
+    // Initialize voice processor only when needed
+    if (!voiceProcessor) {
+      if (statusElement) statusElement.textContent = '连接中...';
+      if (recordingIndicator) {
+        recordingIndicator.style.background = '#F59E0B';
+      }
+      await initializeVoiceProcessor();
+    }
+
+    if (!isVoiceEnabled) {
+      await voiceProcessor!.startRecording();
+      isVoiceEnabled = true;
+      
+      // 更新UI为录音状态
+      if (toggleButton) {
+        toggleButton.textContent = '🎤 语音增强 (开启)';
+        toggleButton.style.background = 'linear-gradient(135deg, #EF4444, #DC2626)';
+      }
+      if (statusElement) {
+        statusElement.textContent = '已启用';
+        statusElement.style.color = '#10B981';
+      }
+      if (recordingIndicator) {
+        recordingIndicator.classList.add('recording-active');
+      }
+      if (pulseRing) {
+        pulseRing.classList.add('pulse-ring-active');
+      }
+    } else {
+      await voiceProcessor!.stopRecording();
+      isVoiceEnabled = false;
+      
+      // 更新UI为停止状态
+      if (toggleButton) {
+        toggleButton.textContent = '🎤 语音增强 (关闭)';
+        toggleButton.style.background = 'linear-gradient(135deg, #4F46E5, #7C3AED)';
+      }
+      if (statusElement) {
+        statusElement.textContent = '已关闭';
+        statusElement.style.color = '#6B7280';
+      }
+      if (recordingIndicator) {
+        recordingIndicator.classList.remove('recording-active');
+        recordingIndicator.style.background = '#9CA3AF';
+      }
+      if (pulseRing) {
+        pulseRing.classList.remove('pulse-ring-active');
+      }
+    }
+  } catch (error) {
+    console.error('语音录制切换失败:', error);
+    
+    // 错误状态UI
+    if (statusElement) {
+      statusElement.textContent = '连接失败';
+      statusElement.style.color = '#EF4444';
+    }
+    if (recordingIndicator) {
+      recordingIndicator.style.background = '#EF4444';
+      recordingIndicator.classList.remove('recording-active');
+    }
+    if (pulseRing) {
+      pulseRing.classList.remove('pulse-ring-active');
+    }
+    
+    let errorMessage = '未知错误';
+    if (error && typeof error === 'object' && 'message' in error) {
+      errorMessage = (error as { message: string }).message;
+    }
+    alert(`语音功能错误: ${errorMessage}`);
+  }
+}
+
 function startRecorder() {
   if (stopRecording) {
     console.log("Recorder already running.");
@@ -118,9 +370,17 @@ function startRecorder() {
   }
   console.log("Starting rrweb recorder for:", window.location.href);
   isRecordingActive = true;
+
+  createVoiceControlPanel();
+  
   stopRecording = rrweb.record({
     emit(event) {
       if (!isRecordingActive) return;
+      const enhancedEvent = {
+        ...event,
+        timestamp: Date.now() / 1000  // 添加精确的时间戳
+      };
+
 
       // Handle scroll events with debouncing and direction detection
       if (
@@ -156,7 +416,7 @@ function startRecorder() {
           chrome.runtime.sendMessage({
             type: "RRWEB_EVENT",
             payload: {
-              ...event,
+              ...enhancedEvent,
               data: roundedScrollData, // Use rounded coordinates
             },
           });
@@ -177,7 +437,7 @@ function startRecorder() {
           chrome.runtime.sendMessage({
             type: "RRWEB_EVENT",
             payload: {
-              ...event,
+              ...enhancedEvent,
               data: roundedScrollData, // Use rounded coordinates
             },
           });
@@ -186,7 +446,7 @@ function startRecorder() {
         }, DEBOUNCE_MS);
       } else {
         // Pass through non-scroll events unchanged
-        chrome.runtime.sendMessage({ type: "RRWEB_EVENT", payload: event });
+        chrome.runtime.sendMessage({ type: "RRWEB_EVENT", payload: enhancedEvent });
       }
     },
     maskInputOptions: {
@@ -219,6 +479,18 @@ function stopRecorder() {
     stopRecording();
     stopRecording = undefined;
     isRecordingActive = false;
+
+    if (voiceProcessor) {
+      voiceProcessor.dispose();
+      voiceProcessor = null;
+    }
+    isVoiceEnabled = false;
+    
+    const panel = document.getElementById('voice-control-panel');
+    if (panel) {
+      panel.remove();
+    }
+
     (window as any).rrwebStop = undefined; // Clean up window property
     // Remove custom listeners when recording stops
     document.removeEventListener("click", handleCustomClick, true);
@@ -243,7 +515,7 @@ function handleCustomClick(event: MouseEvent) {
   try {
     const xpath = getXPath(targetElement);
     const clickData = {
-      timestamp: Date.now(),
+      timestamp: Date.now() / 1000, // Use seconds for rrweb compatibility
       url: document.location.href, // Use document.location for main page URL
       frameUrl: window.location.href, // URL of the frame where the event occurred
       xpath: xpath,
@@ -272,7 +544,7 @@ function handleInput(event: Event) {
   try {
     const xpath = getXPath(targetElement);
     const inputData = {
-      timestamp: Date.now(),
+      timestamp: Date.now() / 1000,
       url: document.location.href,
       frameUrl: window.location.href,
       xpath: xpath,
@@ -290,6 +562,23 @@ function handleInput(event: Event) {
   }
 }
 // --- End Custom Input Handler ---
+
+// 处理来自语音处理器的消息
+function handleVoiceInput(event: MessageEvent) {
+  if (event.data.type === 'VOICE_INPUT') {
+    console.log('收到语音输入:', event.data);
+    
+    // 转发到后台脚本进行处理
+    chrome.runtime.sendMessage({
+      type: "VOICE_INPUT_EVENT",
+      payload: {
+        text: event.data.text,
+        timestamp: event.data.timestamp,
+        url: window.location.href
+      }
+    });
+  }
+}
 
 // --- Custom Select Change Handler ---
 function handleSelectChange(event: Event) {
@@ -545,6 +834,7 @@ function handleBlur(event: FocusEvent) {
 export default defineContentScript({
   matches: ["<all_urls>"],
   main(ctx) {
+    window.addEventListener('message', handleVoiceInput);
     // Listener for status updates from the background script
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.type === "SET_RECORDING_STATUS") {
@@ -587,6 +877,11 @@ export default defineContentScript({
 
     // Optional: Clean up recorder if the page is unloading
     window.addEventListener("beforeunload", () => {
+      if (voiceProcessor) {
+        voiceProcessor.dispose();
+      }
+      window.removeEventListener('message', handleVoiceInput);
+
       // Also remove permanent listeners on unload?
       // Might not be strictly necessary as the page context is destroyed,
       // but good practice if the script could somehow persist.

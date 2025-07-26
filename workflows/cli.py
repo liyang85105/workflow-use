@@ -18,6 +18,7 @@ from workflow_use.controller.service import WorkflowController
 from workflow_use.mcp.service import get_mcp_server
 from workflow_use.recorder.service import RecordingService  # Added import
 from workflow_use.workflow.service import Workflow
+from workflow_use.voice_service.speech_to_text import SpeechToTextService
 
 # Placeholder for recorder functionality
 # from src.recorder.service import RecorderService
@@ -30,10 +31,11 @@ app = typer.Typer(
 )
 
 # Default LLM instance to None
+openai_base_url = os.getenv('OPENAI_BASE_URL', 'https://api.100dog.com/v1')
 llm_instance = None
 try:
-	llm_instance = ChatOpenAI(model='gpt-4o')
-	page_extraction_llm = ChatOpenAI(model='gpt-4o-mini')
+	llm_instance = ChatOpenAI(model='gpt-4o', openai_api_base=openai_base_url)
+	page_extraction_llm = ChatOpenAI(model='gpt-4o-mini', openai_api_base=openai_base_url)
 except Exception as e:
 	typer.secho(f'Error initializing LLM: {e}. Would you like to set your OPENAI_API_KEY?', fg=typer.colors.RED)
 	set_openai_api_key = input('Set OPENAI_API_KEY? (y/n): ')
@@ -462,6 +464,21 @@ def launch_gui():
 		backend.terminate()
 		frontend.terminate()
 
+
+@app.command('voice-service', help='启用语音增强录制服务')
+def record_voice():
+    """录制工作流，可选择启用语音增强"""
+    # Use environment variables
+    api_key = os.getenv('OPENAI_API_KEY')
+    base_url = os.getenv('OPENAI_BASE_URL')
+    
+    if not api_key:
+        typer.secho('OPENAI_API_KEY not found in environment variables', fg=typer.colors.RED)
+        typer.secho('Please set OPENAI_API_KEY in your .env file', fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+    
+    voice_service = SpeechToTextService(api_key=api_key, base_url=base_url)
+    asyncio.run(voice_service.start_server())
 
 if __name__ == '__main__':
 	app()

@@ -21,7 +21,17 @@ import {
   HttpRecordingStartedEvent,
   HttpRecordingStoppedEvent,
   HttpWorkflowUpdateEvent,
+  VoiceEventData
 } from "../lib/message-bus-types";
+
+// Add voice data storage
+interface VoiceEvent {
+  text: string;
+  timestamp: number;
+  url: string;
+}
+
+let voiceEvents: VoiceEvent[] = [];
 
 export default defineBackground(() => {
   // In-memory store for rrweb events, keyed by tabId
@@ -496,7 +506,6 @@ export default defineBackground(() => {
       // Start recording
       if (!isRecordingEnabled) {
         isRecordingEnabled = true;
-        console.log("Recording status set to: true");
         broadcastRecordingStatus(); // Inform content scripts and sidepanel
 
         // Send recording started event to Python server
@@ -512,18 +521,30 @@ export default defineBackground(() => {
       console.log("Received STOP_RECORDING request.");
       if (isRecordingEnabled) {
         isRecordingEnabled = false;
-        console.log("Recording status set to: false");
-        broadcastRecordingStatus(); // Inform content scripts and sidepanel
+        broadcastRecordingStatus();
 
-        // Send recording stopped event to Python server
+        // Convert VoiceEvent[] to VoiceEventData[]
+        const voiceEventData: VoiceEventData[] = voiceEvents.map(ve => ({
+          text: ve.text,
+          timestamp: ve.timestamp,
+          url: ve.url
+        }));
+
         const eventToSend: HttpRecordingStoppedEvent = {
           type: "RECORDING_STOPPED",
           timestamp: Date.now(),
-          payload: { message: "Recording has stopped" },
+          payload: { 
+            message: "Recording has stopped",
+            voiceEvents: voiceEventData,
+            totalSteps: Object.keys(sessionLogs).length
+          },
         };
         sendEventToServer(eventToSend);
+        
+        // Clear voice events for next session
+        voiceEvents = [];
       }
-      sendResponse({ status: "stopped" }); // Send simple confirmation
+      sendResponse({ status: "stopped" });
     }
     // --- Status Request from Content Script ---
     else if (message.type === "REQUEST_RECORDING_STATUS" && sender.tab?.id) {
@@ -532,15 +553,15 @@ export default defineBackground(() => {
       );
       sendResponse({ isRecordingEnabled });
     }
-
-    // --- Removed Handlers ---
-    // else if (message.type === "CLEAR_RECORDING_DATA") { ... } // Now handled by START_RECORDING
-    // else if (message.type === "GET_RECORDING_STATUS") { ... } // Sidepanel uses GET_RECORDING_DATA
-    // else if (message.type === "TOGGLE_RECORDING") { ... } // Replaced by START/STOP
-
-    // Return true if sendResponse will be called asynchronously (screenshotting, GET_RECORDING_DATA)
-    // Otherwise, return false or undefined (implicitly false).
-    return isAsync;
+    else if (message.type === "VOICE_INPUT_EVENT") {
+      const voiceEvent: VoiceEvent = {
+        text: message.payload.text,
+        timestamp: message.payload.timestamp,
+        url: message.payload.url
+      };
+      voiceEvents.push(voiceEvent);
+      console.log('Voice event stored:', voiceEvent);
+    }
   });
 
   // Optional: Save data periodically or on browser close (less reliable)

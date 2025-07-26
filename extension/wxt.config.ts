@@ -8,6 +8,7 @@ import { mergeConfig } from "vite";
 export default defineConfig({
   modules: ["@wxt-dev/module-react"],
   srcDir: "src",
+  outDir: 'dist',
   vite: () =>
     mergeConfig(baseViteConfig, {
       // WXT-specific overrides (optional)

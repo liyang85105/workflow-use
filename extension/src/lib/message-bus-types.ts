@@ -1,5 +1,12 @@
 import { Workflow } from "./workflow-types"; // Assuming Workflow is in this path
 
+// Voice event data structure
+export interface VoiceEventData {
+  text: string;
+  timestamp: number;
+  url: string;
+}
+
 // Types for events sent via HTTP to the Python server
 
 export interface HttpWorkflowUpdateEvent {
@@ -13,6 +20,8 @@ export interface HttpRecordingStartedEvent {
   timestamp: number;
   payload: {
     message: string;
+    voiceEvents?: VoiceEventData[];
+    totalSteps?: number;
   };
 }
 
@@ -21,6 +30,8 @@ export interface HttpRecordingStoppedEvent {
   timestamp: number;
   payload: {
     message: string;
+    voiceEvents: VoiceEventData[];
+    totalSteps: number;
   };
 }
 
