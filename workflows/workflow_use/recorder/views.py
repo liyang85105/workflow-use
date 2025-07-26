@@ -7,8 +7,16 @@ from workflow_use.schema.views import WorkflowDefinitionSchema
 # --- Event Payloads ---
 
 
+class VoiceEventData(BaseModel):
+	text: str
+	timestamp: float
+	url: str
+
+
 class RecordingStatusPayload(BaseModel):
 	message: str
+	voiceEvents: list[VoiceEventData] = []
+	totalSteps: int = 0
 
 
 # --- Main Event Models (mirroring HttpEvent types from message-bus-types.ts) ---

@@ -1,12 +1,17 @@
 import * as rrweb from "rrweb";
 import { EventType, IncrementalSource } from "@rrweb/types";
+import { VoiceProcessor } from '../voice/voice_processor';
+import { VoiceRecorder } from "@/voice/voice_recorder";
 
 let stopRecording: (() => void) | undefined = undefined;
-let isRecordingActive = true; // Content script's local state
+let isRecordingActive = true;
 let scrollTimeout: ReturnType<typeof setTimeout> | null = null;
 let lastScrollY: number | null = null;
 let lastDirection: "up" | "down" | null = null;
-const DEBOUNCE_MS = 500; // Wait 500ms after scroll stops
+const DEBOUNCE_MS = 500;
+
+let voiceProcessor: VoiceProcessor | null = null;
+let isVoiceEnabled: boolean = false;
 
 // --- Helper function to generate XPath ---
 function getXPath(element: HTMLElement): string {
@@ -111,6 +116,107 @@ function getEnhancedCSSSelector(element: HTMLElement, xpath: string): string {
   }
 }
 
+function createVoiceControlPanel(): void {
+  // 检查是否已存在控制面板
+  if (document.getElementById('voice-control-panel')) {
+    return;
+  }
+
+  const panel = document.createElement('div');
+  panel.id = 'voice-control-panel';
+  panel.style.cssText = `
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    z-index: 2147483647;
+    background: #fff;
+    border: 2px solid #4CAF50;
+    border-radius: 8px;
+    padding: 10px;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+    font-family: Arial, sans-serif;
+    font-size: 14px;
+  `;
+
+  const voiceToggle = document.createElement('button');
+  voiceToggle.textContent = '🎤 语音增强';
+  voiceToggle.style.cssText = `
+    background: #4CAF50;
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-right: 5px;
+  `;
+  voiceToggle.onclick = toggleVoiceRecording;
+
+  const status = document.createElement('span');
+  status.id = 'voice-status';
+  status.textContent = '未启用';
+  status.style.cssText = `
+    color: #666;
+    font-size: 12px;
+  `;
+
+  panel.appendChild(voiceToggle);
+  panel.appendChild(status);
+  document.body.appendChild(panel);
+}
+
+async function initializeVoiceProcessor() {
+  if (voiceProcessor) {
+    console.log("Voice processor already initialized");
+    return voiceProcessor;
+  }
+
+  try {
+    console.log("正在尝试连接 WebSocket 并初始化处理器...");
+    
+    voiceProcessor = await VoiceProcessor.create('ws://127.0.0.1:8765/voice-stream');
+    
+    console.log("✅ WebSocket 连接成功，处理器准备就绪！");
+    return voiceProcessor;
+
+  } catch (error) {
+    console.error("❌ 初始化语音处理器失败:", error);
+    throw error;
+  }
+}
+
+async function toggleVoiceRecording(): Promise<void> {
+  const statusElement = document.getElementById('voice-status');
+  const toggleButton = document.querySelector('#voice-control-panel button') as HTMLButtonElement;
+
+  try {
+    // Initialize voice processor only when needed
+    if (!voiceProcessor) {
+      if (statusElement) statusElement.textContent = '连接中...';
+      await initializeVoiceProcessor();
+    }
+
+    if (!isVoiceEnabled) {
+      await voiceProcessor!.startRecording();
+      isVoiceEnabled = true;
+      if (toggleButton) toggleButton.textContent = '🛑 停止语音';
+      if (statusElement) statusElement.textContent = '录音中';
+    } else {
+      await voiceProcessor!.stopRecording();
+      isVoiceEnabled = false;
+      if (toggleButton) toggleButton.textContent = '🎤 开始语音';
+      if (statusElement) statusElement.textContent = '已停止';
+    }
+  } catch (error) {
+    console.error('语音录制切换失败:', error);
+    if (statusElement) statusElement.textContent = '错误';
+    let errorMessage = '未知错误';
+    if (error && typeof error === 'object' && 'message' in error) {
+      errorMessage = (error as { message: string }).message;
+    }
+    alert(`语音功能错误: ${errorMessage}`);
+  }
+}
+
 function startRecorder() {
   if (stopRecording) {
     console.log("Recorder already running.");
@@ -118,9 +224,17 @@ function startRecorder() {
   }
   console.log("Starting rrweb recorder for:", window.location.href);
   isRecordingActive = true;
+
+  createVoiceControlPanel();
+  
   stopRecording = rrweb.record({
     emit(event) {
       if (!isRecordingActive) return;
+      const enhancedEvent = {
+        ...event,
+        timestamp: Date.now() / 1000  // 添加精确的时间戳
+      };
+
 
       // Handle scroll events with debouncing and direction detection
       if (
@@ -156,7 +270,7 @@ function startRecorder() {
           chrome.runtime.sendMessage({
             type: "RRWEB_EVENT",
             payload: {
-              ...event,
+              ...enhancedEvent,
               data: roundedScrollData, // Use rounded coordinates
             },
           });
@@ -177,7 +291,7 @@ function startRecorder() {
           chrome.runtime.sendMessage({
             type: "RRWEB_EVENT",
             payload: {
-              ...event,
+              ...enhancedEvent,
               data: roundedScrollData, // Use rounded coordinates
             },
           });
@@ -186,7 +300,7 @@ function startRecorder() {
         }, DEBOUNCE_MS);
       } else {
         // Pass through non-scroll events unchanged
-        chrome.runtime.sendMessage({ type: "RRWEB_EVENT", payload: event });
+        chrome.runtime.sendMessage({ type: "RRWEB_EVENT", payload: enhancedEvent });
       }
     },
     maskInputOptions: {
@@ -219,6 +333,18 @@ function stopRecorder() {
     stopRecording();
     stopRecording = undefined;
     isRecordingActive = false;
+
+    if (voiceProcessor) {
+      voiceProcessor.dispose();
+      voiceProcessor = null;
+    }
+    isVoiceEnabled = false;
+    
+    const panel = document.getElementById('voice-control-panel');
+    if (panel) {
+      panel.remove();
+    }
+
     (window as any).rrwebStop = undefined; // Clean up window property
     // Remove custom listeners when recording stops
     document.removeEventListener("click", handleCustomClick, true);
@@ -243,7 +369,7 @@ function handleCustomClick(event: MouseEvent) {
   try {
     const xpath = getXPath(targetElement);
     const clickData = {
-      timestamp: Date.now(),
+      timestamp: Date.now() / 1000, // Use seconds for rrweb compatibility
       url: document.location.href, // Use document.location for main page URL
       frameUrl: window.location.href, // URL of the frame where the event occurred
       xpath: xpath,
@@ -272,7 +398,7 @@ function handleInput(event: Event) {
   try {
     const xpath = getXPath(targetElement);
     const inputData = {
-      timestamp: Date.now(),
+      timestamp: Date.now() / 1000,
       url: document.location.href,
       frameUrl: window.location.href,
       xpath: xpath,
@@ -290,6 +416,23 @@ function handleInput(event: Event) {
   }
 }
 // --- End Custom Input Handler ---
+
+// 处理来自语音处理器的消息
+function handleVoiceInput(event: MessageEvent) {
+  if (event.data.type === 'VOICE_INPUT') {
+    console.log('收到语音输入:', event.data);
+    
+    // 转发到后台脚本进行处理
+    chrome.runtime.sendMessage({
+      type: "VOICE_INPUT_EVENT",
+      payload: {
+        text: event.data.text,
+        timestamp: event.data.timestamp,
+        url: window.location.href
+      }
+    });
+  }
+}
 
 // --- Custom Select Change Handler ---
 function handleSelectChange(event: Event) {
@@ -545,6 +688,7 @@ function handleBlur(event: FocusEvent) {
 export default defineContentScript({
   matches: ["<all_urls>"],
   main(ctx) {
+    window.addEventListener('message', handleVoiceInput);
     // Listener for status updates from the background script
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.type === "SET_RECORDING_STATUS") {
@@ -587,6 +731,11 @@ export default defineContentScript({
 
     // Optional: Clean up recorder if the page is unloading
     window.addEventListener("beforeunload", () => {
+      if (voiceProcessor) {
+        voiceProcessor.dispose();
+      }
+      window.removeEventListener('message', handleVoiceInput);
+
       // Also remove permanent listeners on unload?
       // Might not be strictly necessary as the page context is destroyed,
       // but good practice if the script could somehow persist.

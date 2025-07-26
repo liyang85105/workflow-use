@@ -244,6 +244,26 @@ class RecordingService:
 			print('[Service] No workflow captured or an error occurred.')
 		return self.final_workflow_output
 
+	def generate_comprehensive_workflow(self, voice_events: list = None):
+		"""Generate workflow with voice instructions integrated"""
+		workflow_steps = []
+		
+		# Process regular interaction events
+		for event in self.events:
+			step = self.process_interaction_event(event)
+			workflow_steps.append(step)
+		
+		# Integrate voice instructions
+		if voice_events:
+			for voice_event in voice_events:
+				# Find closest interaction event by timestamp
+				closest_step = self.find_closest_step(voice_event['timestamp'], workflow_steps)
+				if closest_step:
+					closest_step['voice_instruction'] = voice_event['text']
+					closest_step['enhanced_context'] = True
+		
+		return workflow_steps
+
 
 async def main_service_runner():  # Example of how to run the service
 	service = RecordingService()
