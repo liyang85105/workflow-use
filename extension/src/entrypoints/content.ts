@@ -126,39 +126,138 @@ function createVoiceControlPanel(): void {
   panel.id = 'voice-control-panel';
   panel.style.cssText = `
     position: fixed;
-    top: 10px;
-    right: 10px;
+    top: 20px;
+    right: 20px;
     z-index: 2147483647;
-    background: #fff;
-    border: 2px solid #4CAF50;
-    border-radius: 8px;
-    padding: 10px;
-    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-    font-family: Arial, sans-serif;
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    border-radius: 16px;
+    padding: 16px 20px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    transition: all 0.3s ease;
+    min-width: 200px;
   `;
 
+  // 录音状态指示器
+  const recordingIndicator = document.createElement('div');
+  recordingIndicator.id = 'recording-indicator';
+  recordingIndicator.style.cssText = `
+    position: relative;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #9CA3AF;
+    transition: all 0.3s ease;
+  `;
+
+  // 创建同心圆动画元素
+  const pulseRing = document.createElement('div');
+  pulseRing.id = 'pulse-ring';
+  pulseRing.style.cssText = `
+    position: absolute;
+    top: -4px;
+    left: -4px;
+    width: 20px;
+    height: 20px;
+    border: 2px solid #EF4444;
+    border-radius: 50%;
+    opacity: 0;
+    transform: scale(0.8);
+    animation: none;
+  `;
+
+  recordingIndicator.appendChild(pulseRing);
+
   const voiceToggle = document.createElement('button');
-  voiceToggle.textContent = '🎤 语音增强';
+  voiceToggle.textContent = '🎤 智能语音助理';
   voiceToggle.style.cssText = `
-    background: #4CAF50;
+    background: linear-gradient(135deg, #4F46E5, #7C3AED);
     color: white;
     border: none;
-    padding: 8px 12px;
-    border-radius: 4px;
+    padding: 10px 16px;
+    border-radius: 12px;
     cursor: pointer;
-    margin-right: 5px;
+    font-weight: 500;
+    font-size: 13px;
+    transition: all 0.2s ease;
+    box-shadow: 0 2px 8px rgba(79, 70, 229, 0.3);
+    flex: 1;
   `;
+
+  // 添加按钮悬停效果
+  voiceToggle.addEventListener('mouseenter', () => {
+    voiceToggle.style.transform = 'translateY(-1px)';
+    voiceToggle.style.boxShadow = '0 4px 12px rgba(79, 70, 229, 0.4)';
+  });
+
+  voiceToggle.addEventListener('mouseleave', () => {
+    voiceToggle.style.transform = 'translateY(0)';
+    voiceToggle.style.boxShadow = '0 2px 8px rgba(79, 70, 229, 0.3)';
+  });
+
   voiceToggle.onclick = toggleVoiceRecording;
 
   const status = document.createElement('span');
   status.id = 'voice-status';
   status.textContent = '未启用';
   status.style.cssText = `
-    color: #666;
+    color: #6B7280;
     font-size: 12px;
+    font-weight: 500;
+    min-width: 60px;
   `;
 
+  // 添加CSS动画样式到页面
+  if (!document.getElementById('voice-panel-styles')) {
+    const style = document.createElement('style');
+    style.id = 'voice-panel-styles';
+    style.textContent = `
+      @keyframes pulse-ring {
+        0% {
+          transform: scale(0.8);
+          opacity: 1;
+        }
+        50% {
+          transform: scale(1.2);
+          opacity: 0.7;
+        }
+        100% {
+          transform: scale(1.4);
+          opacity: 0;
+        }
+      }
+      
+      @keyframes pulse-dot {
+        0%, 100% {
+          transform: scale(1);
+          opacity: 1;
+        }
+        50% {
+          transform: scale(1.1);
+          opacity: 0.8;
+        }
+      }
+      
+      .recording-active {
+        background: #EF4444 !important;
+        animation: pulse-dot 1.5s ease-in-out infinite !important;
+      }
+      
+      .pulse-ring-active {
+        animation: pulse-ring 1.5s ease-out infinite !important;
+        opacity: 1 !important;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  panel.appendChild(recordingIndicator);
   panel.appendChild(voiceToggle);
   panel.appendChild(status);
   document.body.appendChild(panel);
@@ -187,28 +286,75 @@ async function initializeVoiceProcessor() {
 async function toggleVoiceRecording(): Promise<void> {
   const statusElement = document.getElementById('voice-status');
   const toggleButton = document.querySelector('#voice-control-panel button') as HTMLButtonElement;
+  const recordingIndicator = document.getElementById('recording-indicator');
+  const pulseRing = document.getElementById('pulse-ring');
 
   try {
     // Initialize voice processor only when needed
     if (!voiceProcessor) {
       if (statusElement) statusElement.textContent = '连接中...';
+      if (recordingIndicator) {
+        recordingIndicator.style.background = '#F59E0B';
+      }
       await initializeVoiceProcessor();
     }
 
     if (!isVoiceEnabled) {
       await voiceProcessor!.startRecording();
       isVoiceEnabled = true;
-      if (toggleButton) toggleButton.textContent = '🛑 停止语音';
-      if (statusElement) statusElement.textContent = '录音中';
+      
+      // 更新UI为录音状态
+      if (toggleButton) {
+        toggleButton.textContent = '🎤 语音增强 (开启)';
+        toggleButton.style.background = 'linear-gradient(135deg, #EF4444, #DC2626)';
+      }
+      if (statusElement) {
+        statusElement.textContent = '已启用';
+        statusElement.style.color = '#10B981';
+      }
+      if (recordingIndicator) {
+        recordingIndicator.classList.add('recording-active');
+      }
+      if (pulseRing) {
+        pulseRing.classList.add('pulse-ring-active');
+      }
     } else {
       await voiceProcessor!.stopRecording();
       isVoiceEnabled = false;
-      if (toggleButton) toggleButton.textContent = '🎤 开始语音';
-      if (statusElement) statusElement.textContent = '已停止';
+      
+      // 更新UI为停止状态
+      if (toggleButton) {
+        toggleButton.textContent = '🎤 语音增强 (关闭)';
+        toggleButton.style.background = 'linear-gradient(135deg, #4F46E5, #7C3AED)';
+      }
+      if (statusElement) {
+        statusElement.textContent = '已关闭';
+        statusElement.style.color = '#6B7280';
+      }
+      if (recordingIndicator) {
+        recordingIndicator.classList.remove('recording-active');
+        recordingIndicator.style.background = '#9CA3AF';
+      }
+      if (pulseRing) {
+        pulseRing.classList.remove('pulse-ring-active');
+      }
     }
   } catch (error) {
     console.error('语音录制切换失败:', error);
-    if (statusElement) statusElement.textContent = '错误';
+    
+    // 错误状态UI
+    if (statusElement) {
+      statusElement.textContent = '连接失败';
+      statusElement.style.color = '#EF4444';
+    }
+    if (recordingIndicator) {
+      recordingIndicator.style.background = '#EF4444';
+      recordingIndicator.classList.remove('recording-active');
+    }
+    if (pulseRing) {
+      pulseRing.classList.remove('pulse-ring-active');
+    }
+    
     let errorMessage = '未知错误';
     if (error && typeof error === 'object' && 'message' in error) {
       errorMessage = (error as { message: string }).message;
