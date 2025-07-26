@@ -30,6 +30,7 @@ class RecordingService:
 		self.browser: Browser
 
 		self.final_workflow_output: Optional[WorkflowDefinitionSchema] = None
+		self.enhanced_workflow_output: Optional[WorkflowDefinitionSchema] = None  # 新增：增强工作流
 		self.recording_complete_event = asyncio.Event()
 		self.final_workflow_processed_lock = asyncio.Lock()
 		self.final_workflow_processed_flag = False
@@ -68,17 +69,77 @@ class RecordingService:
 			while True:
 				event = await self.event_queue.get()
 				print(f'[Service] Event Received: {event.type}')
+				
 				if isinstance(event, HttpWorkflowUpdateEvent):
-					# self.last_workflow_update_event is already updated in _handle_event_post
 					pass
 				elif isinstance(event, HttpRecordingStoppedEvent):
 					print('[Service] RecordingStoppedEvent received, processing final workflow...')
-					await self._capture_and_signal_final_workflow('RecordingStoppedEvent')
+					
+					# 提取语音事件
+					voice_events = event.payload.voiceEvents
+					
+					# 根据是否有语音事件选择处理流程
+					if voice_events:
+						print(f'[Service] Processing {len(voice_events)} voice events => Enhanced Workflow')
+						await self._process_voice_enhanced_workflow(voice_events)
+					else:
+						print('[Service] No voice events => Original workflow')
+						self.enhanced_workflow_output = self.last_workflow_update_event.payload if self.last_workflow_update_event else None
+				
 				self.event_queue.task_done()
 		except asyncio.CancelledError:
 			print('[Service] Event processing task cancelled.')
+
+	async def _process_voice_enhanced_workflow(self, voice_events: list):
+		"""处理包含语音数据的工作流 - 只在确定有语音事件时调用"""
+		if not self.last_workflow_update_event:
+			print('[Service] No workflow data available')
+			return
+		
+		# 获取浏览器事件
+		browser_workflow = self.last_workflow_update_event.payload
+		browser_steps = browser_workflow.steps
+		
+		try:
+			# 转换语音事件格式
+			voice_event_objects = []
+			for ve in voice_events:
+				voice_event_objects.append({
+					'text': ve.text,
+					'timestamp': ve.timestamp,
+					'url': ve.url,
+					'confidence': 0.8
+				})
+			
+			# 使用事件关联器关联语音和浏览器事件
+			from workflow_use.correlator.event_correlator import EventCorrelator
+			correlator = EventCorrelator(time_window=5.0)
+			
+			browser_events = self._convert_steps_to_browser_events(browser_steps)
+			voice_events_obj = self._convert_to_voice_events(voice_event_objects)
+			
+			# 执行关联
+			correlations = correlator.correlate_events(browser_events, voice_events_obj)
+			
+			# 生成增强工作流
+			from workflow_use.enhanced_generator.enhanced_workflow_generator import EnhancedWorkflowGenerator
+			generator = EnhancedWorkflowGenerator(self.llm)
+			
+			enhanced_workflow_dict = await generator.generate_enhanced_workflow(
+				correlations, 
+				"Voice Enhanced Workflow"
+			)
+			
+			# 转换为 WorkflowDefinitionSchema
+			self.enhanced_workflow_output = WorkflowDefinitionSchema(**enhanced_workflow_dict)
+			
+			print(f'[Service] Generated enhanced workflow with {len(self.enhanced_workflow_output.steps)} steps')
+			
 		except Exception as e:
-			print(f'[Service] Error in event processing task: {e}')
+			print(f'[Service] Error processing voice enhanced workflow: {e}')
+			# 出错时使用原始工作流
+			print('[Service] Falling back to original workflow due to error')
+			self.enhanced_workflow_output = self.last_workflow_update_event.payload
 
 	async def _capture_and_signal_final_workflow(self, trigger_reason: str):
 		processed_this_call = False
@@ -169,6 +230,7 @@ class RecordingService:
 		# Reset state for this session
 		self.last_workflow_update_event = None
 		self.final_workflow_output = None
+		self.enhanced_workflow_output = None  # 重置增强工作流
 		self.recording_complete_event.clear()
 		self.final_workflow_processed_flag = False
 
@@ -238,11 +300,16 @@ class RecordingService:
 
 			print('[Service] Cleanup phase complete.')
 
-		if self.final_workflow_output:
-			print('[Service] Returning captured workflow.')
+		# 优先返回增强工作流，如果没有则返回原始工作流
+		result_workflow = self.enhanced_workflow_output or self.final_workflow_output
+		
+		if result_workflow:
+			workflow_type = "enhanced" if self.enhanced_workflow_output else "original"
+			print(f'[Service] Returning {workflow_type} captured workflow.')
 		else:
 			print('[Service] No workflow captured or an error occurred.')
-		return self.final_workflow_output
+		
+		return result_workflow
 
 	def generate_comprehensive_workflow(self, voice_events: list = None):
 		"""Generate workflow with voice instructions integrated"""
@@ -263,6 +330,46 @@ class RecordingService:
 					closest_step['enhanced_context'] = True
 		
 		return workflow_steps
+
+	def _convert_steps_to_browser_events(self, steps):
+		"""将工作流步骤转换为浏览器事件格式"""
+		from workflow_use.correlator.event_correlator import BrowserEvent
+		
+		browser_events = []
+		for step in steps:
+			browser_event = BrowserEvent(
+				id=f"browser_{step.timestamp}",
+				type=step.type,
+				timestamp=step.timestamp / 1000,  # 转换为秒
+				url=step.url,
+				session_id="current_session",
+				xpath=getattr(step, 'xpath', None),
+				css_selector=getattr(step, 'cssSelector', None),
+				element_tag=getattr(step, 'elementTag', None),
+				value=getattr(step, 'value', None),
+				tab_id=str(getattr(step, 'tabId', ''))
+			)
+			browser_events.append(browser_event)
+		
+		return browser_events
+
+	def _convert_to_voice_events(self, voice_data_list):
+		"""将语音数据转换为语音事件格式"""
+		from workflow_use.correlator.event_correlator import VoiceEvent
+		
+		voice_events = []
+		for i, vd in enumerate(voice_data_list):
+			voice_event = VoiceEvent(
+				id=f"voice_{i}",
+				text=vd['text'],
+				timestamp=vd['timestamp'],
+				confidence=vd.get('confidence', 0.8),
+				session_id="current_session",
+				url=vd['url']
+			)
+			voice_events.append(voice_event)
+		
+		return voice_events
 
 
 async def main_service_runner():  # Example of how to run the service

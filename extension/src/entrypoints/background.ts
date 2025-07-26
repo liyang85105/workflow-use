@@ -21,6 +21,7 @@ import {
   HttpRecordingStartedEvent,
   HttpRecordingStoppedEvent,
   HttpWorkflowUpdateEvent,
+  VoiceEventData
 } from "../lib/message-bus-types";
 
 // Add voice data storage
@@ -522,13 +523,19 @@ export default defineBackground(() => {
         isRecordingEnabled = false;
         broadcastRecordingStatus();
 
-        // Send comprehensive workflow data including voice
+        // Convert VoiceEvent[] to VoiceEventData[]
+        const voiceEventData: VoiceEventData[] = voiceEvents.map(ve => ({
+          text: ve.text,
+          timestamp: ve.timestamp,
+          url: ve.url
+        }));
+
         const eventToSend: HttpRecordingStoppedEvent = {
           type: "RECORDING_STOPPED",
           timestamp: Date.now(),
           payload: { 
             message: "Recording has stopped",
-            voiceEvents: voiceEvents,
+            voiceEvents: voiceEventData,
             totalSteps: Object.keys(sessionLogs).length
           },
         };
@@ -555,15 +562,6 @@ export default defineBackground(() => {
       voiceEvents.push(voiceEvent);
       console.log('Voice event stored:', voiceEvent);
     }
-
-    // --- Removed Handlers ---
-    // else if (message.type === "CLEAR_RECORDING_DATA") { ... } // Now handled by START_RECORDING
-    // else if (message.type === "GET_RECORDING_STATUS") { ... } // Sidepanel uses GET_RECORDING_DATA
-    // else if (message.type === "TOGGLE_RECORDING") { ... } // Replaced by START/STOP
-
-    // Return true if sendResponse will be called asynchronously (screenshotting, GET_RECORDING_DATA)
-    // Otherwise, return false or undefined (implicitly false).
-    // return isAsync;
   });
 
   // Optional: Save data periodically or on browser close (less reliable)
