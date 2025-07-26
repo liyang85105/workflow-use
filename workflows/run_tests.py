@@ -17,9 +17,8 @@ def run_tests():
         # 事件关联器测试
         ["python", "-m", "pytest", "tests/correlator/", "-v"],
         
-        # 可以继续添加其他组件的测试
-        # ["python", "-m", "pytest", "tests/enhanced_generator/", "-v"],
-        # ["python", "-m", "pytest", "tests/storage/", "-v"],
+        # 增强型工作流生成器测试
+        ["python", "-m", "pytest", "tests/enhanced_generator/", "-v"],
     ]
     
     print("🧪 开始运行语音增强工作流组件测试...")

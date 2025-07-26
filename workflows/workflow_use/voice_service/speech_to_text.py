@@ -42,6 +42,10 @@ class SpeechToTextService:
             self.whisper_model = "whisper-1"
             self.language = "zh"  # 中文
             
+            # 添加配置选项
+            self.enable_streaming = os.getenv('VOICE_STREAMING_ENABLED', 'true').lower() == 'true'
+            self.chunk_size = int(os.getenv('VOICE_CHUNK_SIZE', '8192'))
+            
         except Exception as e:
             logger.error(f"Failed to initialize SpeechToTextService: {e}")
             raise
@@ -100,61 +104,20 @@ class SpeechToTextService:
             logger.info(f"Client removed. Total clients: {len(self.clients)}")
 
     async def process_audio_chunk(self, audio_data):
-        """处理音频数据块 - Enhanced with debugging"""
+        """优化的音频处理 - 支持流式识别"""
         try:
-            logger.info(f"🎵 Processing audio chunk, type: {type(audio_data)}")
+            # 快速响应确认收到
+            await self.send_ack_to_client("音频接收中...")
             
-            # Check data type
-            if isinstance(audio_data, str):
-                try:
-                    message = json.loads(audio_data)
-                    if message.get('type') == 'audio':
-                        audio_data = message.get('data')
-                        size = message.get('size', 0)
-                        mime_type = message.get('mimeType', 'unknown')
-                        logger.info(f"📦 Extracted audio data from JSON, reported size: {size}, mime: {mime_type}, data length: {len(audio_data) if audio_data else 0}")
-                    else:
-                        logger.warning(f"⚠️ Non-audio message type: {message.get('type')}")
-                        return
-                except json.JSONDecodeError:
-                    logger.error("❌ Invalid JSON message received")
-                    return
-            
-            if not audio_data:
-                logger.warning("⚠️ No audio data to process")
-                return
-            
-            # Validate base64 data before processing
-            if isinstance(audio_data, str):
-                try:
-                    import base64
-                    decoded_data = base64.b64decode(audio_data)
-                    logger.info(f"✅ Base64 validation successful, decoded size: {len(decoded_data)} bytes")
-                    
-                    # More lenient size check - WebM can be smaller
-                    if len(decoded_data) < 4096:  # 4KB minimum
-                        logger.warning(f"⚠️ Decoded audio data small ({len(decoded_data)} bytes), may be too short")
-                        # Still try to process, but warn user
-                        
-                except Exception as e:
-                    logger.error(f"❌ Base64 validation failed: {e}")
-                    return
-            
-            # Process transcription
+            # 异步处理识别
             loop = asyncio.get_event_loop()
             text = await loop.run_in_executor(None, self.transcribe_audio, audio_data)
             
             if text:
-                logger.info(f"✅ Transcription successful: '{text[:100]}...'")
-                timestamp = datetime.now().timestamp()
-                await self.broadcast_transcription(text, timestamp)
-            else:
-                logger.warning("⚠️ No transcription result")
+                await self.broadcast_transcription(text, datetime.now().timestamp())
                 
         except Exception as e:
-            logger.error(f"❌ Error processing audio chunk: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            await self.send_error_to_client(f"识别失败: {str(e)}")
 
     def transcribe_audio(self, audio_data) -> Optional[str]:
         """
