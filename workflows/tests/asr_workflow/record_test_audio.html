@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Record Test Audio</title>
+</head>
+<body>
+    <h1>Record Test Audio for WebSocket Testing</h1>
+    <button id="startRecord">🎤 Start Recording</button>
+    <button id="stopRecord" disabled>⏹️ Stop Recording</button>
+    <button id="playback" disabled>▶️ Play</button>
+    <button id="download" disabled>💾 Download</button>
+    
+    <p id="status">Ready to record</p>
+    <audio id="audioPlayback" controls style="display:none;"></audio>
+
+    <script>
+        let mediaRecorder;
+        let audioChunks = [];
+        let audioBlob;
+
+        const startBtn = document.getElementById('startRecord');
+        const stopBtn = document.getElementById('stopRecord');
+        const playBtn = document.getElementById('playback');
+        const downloadBtn = document.getElementById('download');
+        const status = document.getElementById('status');
+        const audioPlayback = document.getElementById('audioPlayback');
+
+        startBtn.onclick = async () => {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                
+                mediaRecorder.ondataavailable = event => {
+                    audioChunks.push(event.data);
+                };
+                
+                mediaRecorder.onstop = () => {
+                    audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    const audioUrl = URL.createObjectURL(audioBlob);
+                    audioPlayback.src = audioUrl;
+                    audioPlayback.style.display = 'block';
+                    
+                    playBtn.disabled = false;
+                    downloadBtn.disabled = false;
+                    status.textContent = `Recording complete! Size: ${audioBlob.size} bytes`;
+                };
+                
+                mediaRecorder.start();
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                status.textContent = 'Recording... Speak now!';
+                audioChunks = [];
+                
+            } catch (error) {
+                status.textContent = 'Error: ' + error.message;
+            }
+        };
+
+        stopBtn.onclick = () => {
+            mediaRecorder.stop();
+            mediaRecorder.stream.getTracks().forEach(track => track.stop());
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+        };
+
+        playBtn.onclick = () => {
+            audioPlayback.play();
+        };
+
+        downloadBtn.onclick = () => {
+            const url = URL.createObjectURL(audioBlob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'test_audio.webm';
+            a.click();
+            URL.revokeObjectURL(url);
+        };
+    </script>
+</body>
+</html>
